@@ -19,7 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 
 interface OrderCardProps {
   order: Order;
-  onApproveStage: (orderId: string, imageUrl: string) => void;
+  onApproveStage: (orderId: string, imageUrl: string | null) => void;
 }
 
 const STAGES_REQUIRING_PHOTO = [2, 3, 4]; // Frame Ready, Foaming/Fabric Done, Dispatched
@@ -37,6 +37,7 @@ export default function OrderCard({ order, onApproveStage }: OrderCardProps) {
 
   const isStalled = daysInStage > 3 && order.currentStageIndex < STAGES.length - 1;
   
+  // The photo is required for the stage we are currently IN.
   const photoIsRequired = STAGES_REQUIRING_PHOTO.includes(order.currentStageIndex);
 
   const handleApproveClick = () => {
@@ -59,36 +60,30 @@ export default function OrderCard({ order, onApproveStage }: OrderCardProps) {
 
     setIsUploading(true);
     setError(null);
-
-    let imageUrl = order.imageUrl || 'https://placehold.co/600x400.png';
     
-    if (imageFile) {
-        const result = await approveStageWithImage(order.id, order.currentStageIndex, imageFile);
-        if (result.success) {
-            imageUrl = result.imageUrl!;
-             toast({
-              title: "Success",
-              description: `Image uploaded and stage approved.`,
-            });
-        } else {
-            setError(result.error || 'Failed to upload image.');
-            setIsUploading(false);
-            toast({
-              variant: "destructive",
-              title: "Upload Failed",
-              description: result.error || 'An unknown error occurred.',
-            });
-            return;
-        }
+    const result = await approveStageWithImage(order.id, order.currentStageIndex, imageFile);
+    
+    if (result.success) {
+        toast({
+          title: "Success",
+          description: `Stage approved. Moving to next stage.`,
+        });
+        onApproveStage(order.id, result.imageUrl);
+    } else {
+        setError(result.error || 'Failed to approve stage.');
+        toast({
+          variant: "destructive",
+          title: "Approval Failed",
+          description: result.error || 'An unknown error occurred.',
+        });
     }
     
-    onApproveStage(order.id, imageUrl);
     setIsUploading(false);
     setIsDialogOpen(false);
     setImageFile(null);
   };
 
-  const progressValue = ((order.currentStageIndex + 1) / STAGES.length) * 100;
+  const progressValue = ((order.currentStageIndex) / (STAGES.length -1)) * 100;
   
   return (
     <>
@@ -112,12 +107,14 @@ export default function OrderCard({ order, onApproveStage }: OrderCardProps) {
           <p className="text-xs text-muted-foreground mt-1">
             In stage for: {formatDistanceToNow(new Date(order.stageEnteredAt), { addSuffix: false })}
           </p>
+           <img src={order.imageUrl} alt="Order proof" className="mt-2 rounded-md" data-ai-hint="product manufacturing"/>
         </CardContent>
         <CardFooter className="flex flex-col items-start gap-4">
+          <div className="w-full text-center text-sm font-medium text-muted-foreground">{STAGES[order.currentStageIndex]}</div>
           <Progress value={progressValue} className={cn(progressValue === 100 && "[&>div]:bg-accent")} />
           {order.currentStageIndex < STAGES.length - 1 && (
             <Button onClick={handleApproveClick} size="sm" className="w-full">
-              Approve Stage
+              Approve & Move to Next Stage
             </Button>
           )}
           {order.currentStageIndex === STAGES.length - 1 && (

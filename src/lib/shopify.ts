@@ -64,35 +64,20 @@ function transformShopifyOrder(orderNode: ShopifyOrderNode): Order {
       return currentStage > latestStage ? current : latest;
     });
 
-    // Uploading a photo for a stage (e.g., stage_1_photo for Frame Ready) moves it to the *next* stage.
-    // So if stage_1_photo exists, we are now IN stage 2 (Frame Ready).
-    // The approval moves it from stage 1 -> 2. The photo is proof of completing stage 1.
-    // So the current stage is the one *after* the one with the photo.
-    const completedStage = STAGE_METAFIELD_MAP[latestMetafield.node.key];
-    currentStageIndex = completedStage + 1; // This logic seems off, let's rethink.
-
-    // Let's adjust: The presence of a photo for a stage means that stage *is complete*.
-    // stage_1_photo means 'Frame Ready' is done. The current stage is 'Foaming/Fabric Done'.
-    // So, if stage_1_photo exists, currentStageIndex = 2.
-    // If stage_2_photo exists, currentStageIndex = 3.
-    // If stage_3_photo exists, currentStageIndex = 4.
-    currentStageIndex = STAGE_METAFIELD_MAP[latestMetafield.node.key]
-
-    // Let's fix the logic for good.
+    // The presence of `stage_X_photo` means stage X+1 is complete.
+    // So the current stage is (X+1)+1.
+    // e.g. `stage_1_photo` means stage 2 ('Frame Ready') is complete, so the current stage is 3 ('Foaming/Fabric Done')
+    // Let's fix this logic.
     // The presence of a metafield indicates the completion of that stage.
-    // Stage 2: 'Frame Ready'. Metafield: `stage_1_photo`.
-    // Stage 3: 'Foaming/Fabric Done'. Metafield: `stage_2_photo`.
-    // Stage 4: 'Dispatched'. Metafield: `stage_3_photo`.
-    // The `currentStageIndex` should match the stage number.
-    // So if the latest metafield is `stage_2_photo`, the order is in stage 3.
+    // stage_1_photo means 'Frame Ready' is done. The current stage is 'Foaming/Fabric Done'.
     
-    let latestStage = 0;
+    let latestStageIndex = 0;
     let latestImageUrl = imageUrl;
     
     photoMetafields.forEach(({node: mf}) => {
-        const stageIndex = STAGE_METAFIELD_MAP[mf.key];
-        if (stageIndex > latestStage) {
-            latestStage = stageIndex;
+        const stageIndexForMetafield = STAGE_METAFIELD_MAP[mf.key];
+        if (stageIndexForMetafield > latestStageIndex) {
+            latestStageIndex = stageIndexForMetafield;
             // The value of a file reference metafield is a GID. We need the resolved URL.
             if (mf.reference?.image?.url) {
               latestImageUrl = mf.reference.image.url;
@@ -100,8 +85,11 @@ function transformShopifyOrder(orderNode: ShopifyOrderNode): Order {
         }
     });
 
-    currentStageIndex = latestStage;
+    currentStageIndex = latestStageIndex;
     imageUrl = latestImageUrl;
+  } else {
+    // If no custom metafields are found, we assume the order is newly placed.
+    currentStageIndex = 1; // 'Order Placed'
   }
   
   // Simple check for delivered status (this is a placeholder)
@@ -112,6 +100,13 @@ function transformShopifyOrder(orderNode: ShopifyOrderNode): Order {
          currentStageIndex = 5; // Delivered
      }
   }
+
+  // Final check: if an order has no metafields, it must be in "Order Placed"
+  const hasCustomMetafields = order.metafields.edges.some(({node: mf}) => mf.namespace === 'custom' && mf.key.startsWith('stage_'));
+  if (!hasCustomMetafields) {
+      currentStageIndex = 1; // Order Placed
+  }
+
 
   return {
     id: orderId,
@@ -154,7 +149,7 @@ export async function getShopifyOrders(): Promise<Order[]> {
                   }
                 }
               }
-              metafields(first: 5, namespace: "custom") {
+              metafields(first: 10, namespace: "custom") {
                 edges {
                   node {
                     key
@@ -215,5 +210,3 @@ export async function getShopifyOrders(): Promise<Order[]> {
     return [];
   }
 }
-
-    

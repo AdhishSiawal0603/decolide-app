@@ -38,6 +38,9 @@ const METAFIELD_MAP: { [key: number]: string } = {
 };
 
 const getMetafieldForStage = (stageIndex: number) => {
+  // We upload proof for completing the *previous* stage.
+  // When we are IN stage "Frame Ready" (index 2), we upload proof for it.
+  // That proof is 'stage_1_photo'.
   return METAFIELD_MAP[stageIndex] || null;
 }
 
@@ -48,11 +51,35 @@ const fileToDataURI = async (file: File) => {
 }
 
 const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldKey: string) => {
-  const storefrontId = `gid://shopify/Order/${orderId.split('-').pop()}`;
-  const { SHOPIFY_STORE_NAME, SHOPIFY_ADMIN_API_ACCESS_TOKEN } = process.env;
+  // orderId is the human-readable one like #1021. We need the GID for the API.
+  // This is a temporary solution. A better approach would be to pass the GID from the component.
+  // For now, we will assume the GID can be constructed, which is NOT robust.
+  // Let's fetch the GID based on the order name.
 
+  const { SHOPIFY_STORE_NAME, SHOPIFY_ADMIN_API_ACCESS_TOKEN } = process.env;
   if (!SHOPIFY_STORE_NAME || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
     throw new Error("Shopify store name or access token is not configured.");
+  }
+  const shopifyApiUrl = `https://${SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2024-04/graphql.json`;
+  
+  const getOrderGidQuery = {
+    query: `query { orders(first: 1, query:"name:${orderId}") { edges { node { id } } } }`
+  };
+
+  const gidResponse = await fetch(shopifyApiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': SHOPIFY_ADMIN_API_ACCESS_TOKEN,
+      },
+      body: JSON.stringify(getOrderGidQuery),
+  });
+
+  const gidResult = await gidResponse.json();
+  const storefrontId = gidResult.data?.orders?.edges[0]?.node?.id;
+
+  if (!storefrontId) {
+    throw new Error(`Could not find Shopify Order GID for order name ${orderId}`);
   }
   
   const imageDataUri = await fileToDataURI(imageFile);
@@ -62,9 +89,11 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
       mutation fileCreate($files: [FileCreateInput!]!) {
         fileCreate(files: $files) {
           files {
-            ... on GenericFile {
+            ... on MediaImage {
               id
-              url
+              image {
+                  url
+              }
             }
           }
           userErrors {
@@ -75,13 +104,13 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
       }`,
     variables: {
       files: {
-        contentType: imageFile.type.toUpperCase().replace('/', '_'),
+        contentType: 'IMAGE',
         originalSource: imageDataUri,
       }
     }
   };
 
-  const uploadResponse = await fetch(`https://${SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2024-04/graphql.json`, {
+  const uploadResponse = await fetch(shopifyApiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -93,11 +122,12 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
   const uploadResult = await uploadResponse.json();
   
   if (uploadResult.errors || uploadResult.data?.fileCreate?.userErrors?.length > 0) {
-    console.error("Shopify File Upload Error:", uploadResult.errors || uploadResult.data.fileCreate.userErrors);
+    console.error("Shopify File Upload Error:", JSON.stringify(uploadResult.errors || uploadResult.data.fileCreate.userErrors, null, 2));
     throw new Error('Failed to upload image to Shopify.');
   }
 
   const fileGid = uploadResult.data.fileCreate.files[0].id;
+  const newImageUrl = uploadResult.data.fileCreate.files[0].image.url;
 
   const metafieldMutation = {
     query: `
@@ -127,7 +157,7 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
     }
   };
 
-  const metafieldResponse = await fetch(`https://${SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2024-04/graphql.json`, {
+  const metafieldResponse = await fetch(shopifyApiUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -139,19 +169,28 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
   const metafieldResult = await metafieldResponse.json();
 
   if (metafieldResult.errors || metafieldResult.data?.metafieldsSet?.userErrors?.length > 0) {
-    console.error("Shopify Metafield Set Error:", metafieldResult.errors || metafieldResult.data.metafieldsSet.userErrors);
+    console.error("Shopify Metafield Set Error:", JSON.stringify(metafieldResult.errors || metafieldResult.data.metafieldsSet.userErrors, null, 2));
     throw new Error('Failed to set metafield in Shopify.');
   }
 
-  return uploadResult.data.fileCreate.files[0].url;
+  return newImageUrl;
 }
 
 
-export async function approveStageWithImage(orderId: string, currentStageIndex: number, imageFile: File) {
-  const metafieldKey = getMetafieldForStage(currentStageIndex);
+export async function approveStageWithImage(orderId: string, currentStageIndex: number, imageFile: File | null) {
+  // When we are at a stage, clicking "Approve" means we are completing it and moving to the next.
+  // The photo is proof of the stage we are *currently* in.
+  const stageToComplete = currentStageIndex;
+  const metafieldKey = getMetafieldForStage(stageToComplete);
   
-  if (!metafieldKey) {
-     return { success: true, imageUrl: URL.createObjectURL(imageFile) };
+  if (!metafieldKey || !imageFile) {
+     // No image upload required or no file provided, just advance the stage locally.
+     // This handles stages like 'Order Placed' -> 'Frame Ready' (index 1 -> 2)
+     // A photo is required for stage 2, but not for stage 1.
+     if (imageFile) {
+        return { success: true, imageUrl: URL.createObjectURL(imageFile) };
+     }
+     return { success: true, imageUrl: null };
   }
 
   try {
