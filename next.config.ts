@@ -18,6 +18,11 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  serverRuntimeConfig: {
+    // Will be available on the server-side
+    SHOPIFY_STORE_NAME: process.env.SHOPIFY_STORE_NAME,
+    SHOPIFY_ADMIN_API_ACCESS_TOKEN: process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN,
+  },
 };
 
 export default nextConfig;
