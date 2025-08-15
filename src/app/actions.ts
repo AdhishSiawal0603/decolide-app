@@ -6,6 +6,9 @@ import type { Order } from '@/lib/types';
 import { STAGES } from '@/lib/types';
 import { z } from 'zod';
 
+import { config } from 'dotenv';
+config();
+
 export async function getStalledOrdersSummary(stalledOrders: Order[]) {
   if (stalledOrders.length === 0) {
     return { summary: 'No orders are currently stalled. Great job!' };
@@ -31,16 +34,14 @@ export async function getStalledOrdersSummary(stalledOrders: Order[]) {
   }
 }
 
+// Maps the stage we are *in* to the metafield key that provides proof for it.
 const METAFIELD_MAP: { [key: number]: string } = {
-  2: 'custom.stage_1_photo', // Frame Ready
-  3: 'custom.stage_2_photo', // Foaming/Fabric Done
-  4: 'custom.stage_3_photo', // Dispatched
+  2: 'custom.stage_1_photo', // To prove 'Frame Ready' (index 2) is done, we need 'stage_1_photo'.
+  3: 'custom.stage_2_photo', // To prove 'Foaming/Fabric' (index 3) is done, we need 'stage_2_photo'.
+  4: 'custom.stage_3_photo', // To prove 'Dispatched' (index 4) is done, we need 'stage_3_photo'.
 };
 
 const getMetafieldForStage = (stageIndex: number) => {
-  // We upload proof for completing the *previous* stage.
-  // When we are IN stage "Frame Ready" (index 2), we upload proof for it.
-  // That proof is 'stage_1_photo'.
   return METAFIELD_MAP[stageIndex] || null;
 }
 
@@ -51,17 +52,13 @@ const fileToDataURI = async (file: File) => {
 }
 
 const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldKey: string) => {
-  // orderId is the human-readable one like #1021. We need the GID for the API.
-  // This is a temporary solution. A better approach would be to pass the GID from the component.
-  // For now, we will assume the GID can be constructed, which is NOT robust.
-  // Let's fetch the GID based on the order name.
-
   const { SHOPIFY_STORE_NAME, SHOPIFY_ADMIN_API_ACCESS_TOKEN } = process.env;
   if (!SHOPIFY_STORE_NAME || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
-    throw new Error("Shopify store name or access token is not configured.");
+    throw new Error("Shopify store name or access token is not configured in the environment.");
   }
   const shopifyApiUrl = `https://${SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2024-04/graphql.json`;
   
+  // Step 1: Find the Order's global ID (GID) from its readable name (e.g., "#1021")
   const getOrderGidQuery = {
     query: `query { orders(first: 1, query:"name:${orderId}") { edges { node { id } } } }`
   };
@@ -79,12 +76,13 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
   const storefrontId = gidResult.data?.orders?.edges[0]?.node?.id;
 
   if (!storefrontId) {
-    throw new Error(`Could not find Shopify Order GID for order name ${orderId}`);
+    throw new Error(`Could not find Shopify Order GID for order name ${orderId}. Ensure the order exists.`);
   }
   
+  // Step 2: Upload the image file to Shopify to create a MediaImage record
   const imageDataUri = await fileToDataURI(imageFile);
 
-  const graphqlQuery = {
+  const fileCreateMutation = {
     query: `
       mutation fileCreate($files: [FileCreateInput!]!) {
         fileCreate(files: $files) {
@@ -116,7 +114,7 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
         'Content-Type': 'application/json',
         'X-Shopify-Access-Token': SHOPIFY_ADMIN_API_ACCESS_TOKEN,
       },
-      body: JSON.stringify(graphqlQuery),
+      body: JSON.stringify(fileCreateMutation),
   });
 
   const uploadResult = await uploadResponse.json();
@@ -129,7 +127,8 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
   const fileGid = uploadResult.data.fileCreate.files[0].id;
   const newImageUrl = uploadResult.data.fileCreate.files[0].image.url;
 
-  const metafieldMutation = {
+  // Step 3: Create or update a metafield on the order to link to the new MediaImage
+  const metafieldSetMutation = {
     query: `
       mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
         metafieldsSet(metafields: $metafields) {
@@ -151,7 +150,7 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
           namespace: metafieldKey.split('.')[0],
           ownerId: storefrontId,
           type: "file_reference",
-          value: fileGid,
+          value: fileGid, // Link the metafield to the uploaded file's GID
         }
       ]
     }
@@ -163,7 +162,7 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
       'Content-Type': 'application/json',
       'X-Shopify-Access-Token': SHOPIFY_ADMIN_API_ACCESS_TOKEN,
     },
-    body: JSON.stringify(metafieldMutation),
+    body: JSON.stringify(metafieldSetMutation),
   });
 
   const metafieldResult = await metafieldResponse.json();
@@ -178,19 +177,19 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
 
 
 export async function approveStageWithImage(orderId: string, currentStageIndex: number, imageFile: File | null) {
-  // When we are at a stage, clicking "Approve" means we are completing it and moving to the next.
-  // The photo is proof of the stage we are *currently* in.
+  // Clicking "Approve" for a stage means we are completing it and providing proof.
   const stageToComplete = currentStageIndex;
   const metafieldKey = getMetafieldForStage(stageToComplete);
   
+  // If no metafield is associated with this stage, or no image was provided when one was needed,
+  // we can't proceed with an upload.
+  // This handles the transition from "Order Placed" -> "Frame Ready" which doesn't require a photo to be uploaded.
   if (!metafieldKey || !imageFile) {
-     // No image upload required or no file provided, just advance the stage locally.
-     // This handles stages like 'Order Placed' -> 'Frame Ready' (index 1 -> 2)
-     // A photo is required for stage 2, but not for stage 1.
      if (imageFile) {
+        // Create a local URL for instant UI feedback, even though it's not a real Shopify URL.
         return { success: true, imageUrl: URL.createObjectURL(imageFile) };
      }
-     return { success: true, imageUrl: null };
+     return { success: true, imageUrl: null }; // No image involved, just advance stage locally.
   }
 
   try {
