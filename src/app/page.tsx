@@ -25,14 +25,14 @@ export default async function Home() {
               <p>The application could not connect to Shopify to fetch orders. This can happen for a few reasons:</p>
               <ul className="list-disc list-inside my-2">
                 <li>Your local `.env` file might be missing or have incorrect values.</li>
-                <li>On the live server, the secrets might not be configured correctly in Secret Manager or connected in `apphosting.yaml`.</li>
-                <li>The App Hosting service account may not have permission to access secrets.</li>
+                <li>On the live server, the secrets might not be configured correctly in Secret Manager.</li>
+                <li>The App Hosting service account may not have the "Secret Manager Secret Accessor" role.</li>
               </ul>
               <p className="mt-2 font-mono bg-destructive/20 p-2 rounded-md text-xs">
                 <strong>Error details:</strong> {errorMessage}
               </p>
                <p className="mt-3 text-xs">
-                Please double-check your configuration. If running locally, check your `.env` file. If this is on the live server, ensure secrets are set, `apphosting.yaml` is correct, and the service account has the "Secret Manager Secret Accessor" role.
+                Please double-check your configuration. If running locally, check your `.env` file. If this is on the live server, ensure secrets are set, `apphosting.yaml` is correct, and the service account has the correct IAM permissions.
               </p>
             </AlertDescription>
           </Alert>

@@ -5,6 +5,7 @@ import { summarizeStalledOrders } from '@/ai/flows/summarize-stalled-orders';
 import type { Order } from '@/lib/types';
 import { STAGES } from '@/lib/types';
 import { z } from 'zod';
+import getConfig from 'next/config';
 
 // Maps the stage we are *in* to the metafield key that provides proof for it.
 const METAFIELD_MAP: { [key: number]: string } = {
@@ -24,7 +25,9 @@ const fileToDataURI = async (file: File) => {
 }
 
 const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldKey: string) => {
-  const { SHOPIFY_STORE_NAME, SHOPIFY_ADMIN_API_ACCESS_TOKEN } = process.env;
+  const { serverRuntimeConfig } = getConfig();
+  const { SHOPIFY_STORE_NAME, SHOPIFY_ADMIN_API_ACCESS_TOKEN } = serverRuntimeConfig;
+
   if (!SHOPIFY_STORE_NAME || !SHOPIFY_ADMIN_API_ACCESS_TOKEN) {
     throw new Error("Shopify store name or access token is not configured in the environment.");
   }
@@ -32,7 +35,7 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
   
   // Step 1: Find the Order's global ID (GID) from its readable name (e.g., "#1021")
   const getOrderGidQuery = {
-    query: `query { orders(first: 1, query:"name:${orderId}") { edges { node { id } } } }`
+    query: `query { orders(first: 1, query: "name:${orderId}") { edges { node { id } } } }`
   };
 
   const gidResponse = await fetch(shopifyApiUrl, {
@@ -44,7 +47,18 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
       body: JSON.stringify(getOrderGidQuery),
   });
 
+  if (!gidResponse.ok) {
+    const errorBody = await gidResponse.text();
+    throw new Error(`Shopify API Error during GID fetch: ${gidResponse.status}. Response: ${errorBody}`);
+  }
+
   const gidResult = await gidResponse.json();
+
+  if (gidResult.errors) {
+    const errorMessage = gidResult.errors.map((e: { message: string }) => e.message).join(', ');
+    throw new Error(`Shopify GraphQL Error during GID fetch: ${errorMessage}`);
+  }
+
   const storefrontId = gidResult.data?.orders?.edges[0]?.node?.id;
 
   if (!storefrontId) {
@@ -93,7 +107,8 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
   
   if (uploadResult.errors || uploadResult.data?.fileCreate?.userErrors?.length > 0) {
     console.error("Shopify File Upload Error:", JSON.stringify(uploadResult.errors || uploadResult.data.fileCreate.userErrors, null, 2));
-    throw new Error('Failed to upload image to Shopify.');
+    const errorMessage = uploadResult.data?.fileCreate?.userErrors[0]?.message || 'Failed to upload image to Shopify.';
+    throw new Error(errorMessage);
   }
 
   const fileGid = uploadResult.data.fileCreate.files[0].id;
@@ -141,7 +156,8 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
 
   if (metafieldResult.errors || metafieldResult.data?.metafieldsSet?.userErrors?.length > 0) {
     console.error("Shopify Metafield Set Error:", JSON.stringify(metafieldResult.errors || metafieldResult.data.metafieldsSet.userErrors, null, 2));
-    throw new Error('Failed to set metafield in Shopify.');
+    const errorMessage = metafieldResult.data?.metafieldsSet?.userErrors[0]?.message || 'Failed to set metafield in Shopify.';
+    throw new Error(errorMessage);
   }
 
   return newImageUrl;
