@@ -164,7 +164,7 @@ export async function getShopifyOrders(): Promise<Order[]> {
         'Content-Type': 'application/json',
         'X-Shopify-Access-Token': SHOPIFY_ADMIN_API_ACCESS_TOKEN,
       },
-      body: JSON.stringify(graphqlQuery), // This was the missing piece
+      body: JSON.stringify(graphqlQuery),
       cache: 'no-store', 
     });
 
