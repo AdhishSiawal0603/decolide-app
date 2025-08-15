@@ -1,5 +1,5 @@
-import Dashboard from '@/components/dashboard.tsx';
-import { MOCK_ORDERS } from '@/lib/data';
+import Dashboard from '../components/dashboard';
+import { MOCK_ORDERS } from '../lib/data';
 
 export default function Home() {
   return (
