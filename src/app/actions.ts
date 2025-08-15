@@ -6,34 +6,6 @@ import type { Order } from '@/lib/types';
 import { STAGES } from '@/lib/types';
 import { z } from 'zod';
 
-import { config } from 'dotenv';
-config();
-
-export async function getStalledOrdersSummary(stalledOrders: Order[]) {
-  if (stalledOrders.length === 0) {
-    return { summary: 'No orders are currently stalled. Great job!' };
-  }
-
-  try {
-    const stalledOrdersData = JSON.stringify(
-      stalledOrders.map(order => ({
-        orderId: order.id,
-        currentStage: STAGES[order.currentStageIndex],
-        timeSinceLastUpdate: `${Math.floor((new Date().getTime() - new Date(order.stageEnteredAt).getTime()) / (1000 * 60 * 60 * 24))} days`,
-      }))
-    );
-
-    const result = await summarizeStalledOrders({ stalledOrdersData });
-    return result;
-  } catch (error) {
-    console.error('Error generating summary:', error);
-    if (error instanceof Error) {
-        return { summary: `An error occurred while generating the summary: ${error.message}` };
-    }
-    return { summary: 'An unknown error occurred while generating the summary. Please try again.' };
-  }
-}
-
 // Maps the stage we are *in* to the metafield key that provides proof for it.
 const METAFIELD_MAP: { [key: number]: string } = {
   2: 'custom.stage_1_photo', // To prove 'Frame Ready' (index 2) is done, we need 'stage_1_photo'.
@@ -175,7 +147,6 @@ const uploadImageToShopify = async (orderId: string, imageFile: File, metafieldK
   return newImageUrl;
 }
 
-
 export async function approveStageWithImage(orderId: string, currentStageIndex: number, imageFile: File | null) {
   // Clicking "Approve" for a stage means we are completing it and providing proof.
   const stageToComplete = currentStageIndex;
@@ -199,5 +170,30 @@ export async function approveStageWithImage(orderId: string, currentStageIndex: 
     console.error(error);
     const message = error instanceof Error ? error.message : 'An unknown error occurred during image upload.';
     return { success: false, error: message };
+  }
+}
+
+export async function getStalledOrdersSummary(stalledOrders: Order[]) {
+  if (stalledOrders.length === 0) {
+    return { summary: 'No orders are currently stalled. Great job!' };
+  }
+
+  try {
+    const stalledOrdersData = JSON.stringify(
+      stalledOrders.map(order => ({
+        orderId: order.id,
+        currentStage: STAGES[order.currentStageIndex],
+        timeSinceLastUpdate: `${Math.floor((new Date().getTime() - new Date(order.stageEnteredAt).getTime()) / (1000 * 60 * 60 * 24))} days`,
+      }))
+    );
+
+    const result = await summarizeStalledOrders({ stalledOrdersData });
+    return result;
+  } catch (error) {
+    console.error('Error generating summary:', error);
+    if (error instanceof Error) {
+        return { summary: `An error occurred while generating the summary: ${error.message}` };
+    }
+    return { summary: 'An unknown error occurred while generating the summary. Please try again.' };
   }
 }
