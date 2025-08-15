@@ -5,7 +5,8 @@ runConfig:
   # Increase this value if you'd like to automatically spin up
   # more instances in response to increased traffic.
   maxInstances: 1
-  # Add the secrets your application needs to access at runtime.
-  secrets:
-    - secret: SHOPIFY_ADMIN_API_ACCESS_TOKEN
-    - secret: SHOPIFY_STORE_NAME
+secretEnv:
+  - secret: SHOPIFY_STORE_NAME
+    env: SHOPIFY_STORE_NAME
+  - secret: SHOPIFY_ADMIN_API_ACCESS_TOKEN
+    env: SHOPIFY_ADMIN_API_ACCESS_TOKEN
