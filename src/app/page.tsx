@@ -1,10 +1,13 @@
-import Dashboard from '@/components/dashboard';
-import { MOCK_ORDERS } from '@/lib/data';
 
-export default function Home() {
+import Dashboard from '@/components/dashboard';
+import { getShopifyOrders } from '@/lib/shopify';
+
+export default async function Home() {
+  const initialOrders = await getShopifyOrders();
+  
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <Dashboard initialOrders={MOCK_ORDERS} />
+      <Dashboard initialOrders={initialOrders} />
     </main>
   );
 }
