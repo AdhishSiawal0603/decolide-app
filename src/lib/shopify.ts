@@ -1,24 +1,37 @@
 
 import type { Order } from '@/lib/types';
-import { STAGES } from '@/lib/types';
 
-// A type for the raw order data from Shopify to make it easier to work with.
-type ShopifyOrder = {
-  id: number;
-  name: string; // e.g., #1001
-  created_at: string;
-  customer: {
-    first_name: string;
-    last_name: string;
+type ShopifyOrderNode = {
+  node: {
+    id: string; // This will be the GID, e.g., "gid://shopify/Order/12345"
+    name: string; // This is the readable name, e.g., "#1021"
+    createdAt: string;
+    customer: {
+      firstName: string;
+      lastName: string;
+    };
+    lineItems: {
+      edges: {
+        node: {
+          title: string;
+        };
+      }[];
+    };
+    metafields: {
+      edges: {
+        node: {
+          key: string;
+          namespace: string;
+          value: string;
+          reference?: {
+            image: {
+              url: string;
+            }
+          }
+        };
+      }[];
+    };
   };
-  line_items: {
-    title: string;
-  }[];
-  metafields: {
-      key: string;
-      namespace: string;
-      value: string;
-  }[];
 };
 
 const STAGE_METAFIELD_MAP: { [key: string]: number } = {
@@ -27,74 +40,90 @@ const STAGE_METAFIELD_MAP: { [key: string]: number } = {
   'stage_3_photo': 4, // Dispatched
 };
 
-
-// This function transforms a single Shopify order into our app's Order format.
-function transformShopifyOrder(order: ShopifyOrder): Order {
-  const customerName = `${order.customer?.first_name || ''} ${order.customer?.last_name || 'N/A'}`.trim();
-  const productName = order.line_items?.[0]?.title || 'Unknown Product';
-  const orderId = order.name; // Use the readable order name like #1021
+function transformShopifyOrder(orderNode: ShopifyOrderNode): Order {
+  const { node: order } = orderNode;
+  const customerName = `${order.customer?.firstName || ''} ${order.customer?.lastName || 'N/A'}`.trim();
+  const productName = order.lineItems.edges[0]?.node.title || 'Unknown Product';
   
+  // The GID format is what we need for subsequent API calls.
+  // We'll use the readable name for display.
+  const orderId = order.name; 
+
   let currentStageIndex = 1; // Default to 'Order Placed'
-  let stageEnteredAt = order.created_at;
+  let stageEnteredAt = order.createdAt;
   let imageUrl = 'https://placehold.co/600x400.png';
 
-  // Check metafields to determine the current stage
-  if (order.metafields && order.metafields.length > 0) {
-    let latestStage = 1;
-    let latestImageUrl = imageUrl;
+  const photoMetafields = order.metafields.edges.filter(
+    ({ node: mf }) => mf.namespace === 'custom' && STAGE_METAFIELD_MAP[mf.key]
+  );
+  
+  if (photoMetafields.length > 0) {
+    const latestMetafield = photoMetafields.reduce((latest, current) => {
+      const latestStage = STAGE_METAFIELD_MAP[latest.node.key];
+      const currentStage = STAGE_METAFIELD_MAP[current.node.key];
+      return currentStage > latestStage ? current : latest;
+    });
 
-    const photoFields = order.metafields.filter(mf => 
-        mf.namespace === 'custom' && STAGE_METAFIELD_MAP[mf.key]
-    );
+    // Uploading a photo for a stage (e.g., stage_1_photo for Frame Ready) moves it to the *next* stage.
+    // So if stage_1_photo exists, we are now IN stage 2 (Frame Ready).
+    // The approval moves it from stage 1 -> 2. The photo is proof of completing stage 1.
+    // So the current stage is the one *after* the one with the photo.
+    const completedStage = STAGE_METAFIELD_MAP[latestMetafield.node.key];
+    currentStageIndex = completedStage + 1; // This logic seems off, let's rethink.
 
-    if (photoFields.length > 0) {
-        // Find the highest stage that has a photo
-        const latestPhotoField = photoFields.reduce((latest, field) => {
-            return STAGE_METAFIELD_MAP[field.key] > STAGE_METAFIELD_MAP[latest.key] ? field : latest;
-        });
+    // Let's adjust: The presence of a photo for a stage means that stage *is complete*.
+    // stage_1_photo means 'Frame Ready' is done. The current stage is 'Foaming/Fabric Done'.
+    // So, if stage_1_photo exists, currentStageIndex = 2.
+    // If stage_2_photo exists, currentStageIndex = 3.
+    // If stage_3_photo exists, currentStageIndex = 4.
+    currentStageIndex = STAGE_METAFIELD_MAP[latestMetafield.node.key]
 
-        const stageIndex = STAGE_METAFIELD_MAP[latestPhotoField.key];
-        // The process is that uploading a photo approves the *previous* stage.
-        // So if stage_1_photo exists, we are now IN stage 2 ('Frame Ready').
-        // The photo approval moves it to the *next* stage.
-        latestStage = stageIndex;
-        // The value of the metafield is the GID of the file. We will need to query the file URL later if we want to display it.
-        // For now, let's assume we have an image if the metafield exists.
-        // In a real app, you'd make another API call to get the file URL from the GID.
-        latestImageUrl = `https://placehold.co/600x400.png?text=Stage+${latestStage}+Approved`; 
-    }
+    // Let's fix the logic for good.
+    // The presence of a metafield indicates the completion of that stage.
+    // Stage 2: 'Frame Ready'. Metafield: `stage_1_photo`.
+    // Stage 3: 'Foaming/Fabric Done'. Metafield: `stage_2_photo`.
+    // Stage 4: 'Dispatched'. Metafield: `stage_3_photo`.
+    // The `currentStageIndex` should match the stage number.
+    // So if the latest metafield is `stage_2_photo`, the order is in stage 3.
     
+    let latestStage = 0;
+    let latestImageUrl = imageUrl;
+    
+    photoMetafields.forEach(({node: mf}) => {
+        const stageIndex = STAGE_METAFIELD_MAP[mf.key];
+        if (stageIndex > latestStage) {
+            latestStage = stageIndex;
+            // The value of a file reference metafield is a GID. We need the resolved URL.
+            if (mf.reference?.image?.url) {
+              latestImageUrl = mf.reference.image.url;
+            }
+        }
+    });
+
     currentStageIndex = latestStage;
     imageUrl = latestImageUrl;
-    // In a real scenario, we would also store the timestamp of stage approval in another metafield.
-    // For now, we'll just use the order creation date.
-    stageEnteredAt = order.created_at;
   }
   
-  // A simple check for delivered status (could be a tag or fulfillment status in a real app)
-  // This is a placeholder for now.
-  if (currentStageIndex === 4) { // If it was dispatched...
-    // let's assume it gets delivered after 2 days for demo purposes
+  // Simple check for delivered status (this is a placeholder)
+  // A real app would check fulfillment status.
+  if (currentStageIndex === 4) {
      const dispatchedDate = new Date(stageEnteredAt);
      if (new Date().getTime() > dispatchedDate.getTime() + 2 * 24 * 60 * 60 * 1000) {
          currentStageIndex = 5; // Delivered
      }
   }
 
-
   return {
     id: orderId,
     customerName,
     productName,
-    orderDate: order.created_at,
+    orderDate: order.createdAt,
     currentStageIndex,
-    stageEnteredAt: stageEnteredAt,
+    stageEnteredAt: stageEnteredAt, 
     imageUrl,
   };
 }
 
-
-// Fetches the last 50 orders from your Shopify store.
 export async function getShopifyOrders(): Promise<Order[]> {
   const { SHOPIFY_STORE_NAME, SHOPIFY_ADMIN_API_ACCESS_TOKEN } = process.env;
 
@@ -103,16 +132,60 @@ export async function getShopifyOrders(): Promise<Order[]> {
     return [];
   }
 
-  const shopifyApiUrl = `https://${SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2024-04/orders.json?limit=50&status=any&sort=created_at&fields=id,name,created_at,customer,line_items`;
-  
+  const shopifyApiUrl = `https://${SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2024-04/graphql.json`;
+
+  const graphqlQuery = {
+    query: `
+      query getOrders {
+        orders(first: 50, sortKey: CREATED_AT, reverse: true) {
+          edges {
+            node {
+              id
+              name
+              createdAt
+              customer {
+                firstName
+                lastName
+              }
+              lineItems(first: 1) {
+                edges {
+                  node {
+                    title
+                  }
+                }
+              }
+              metafields(first: 5, namespace: "custom") {
+                edges {
+                  node {
+                    key
+                    namespace
+                    value
+                    reference {
+                       ... on MediaImage {
+                        image {
+                          url
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `,
+  };
+
   try {
     const response = await fetch(shopifyApiUrl, {
-      method: 'GET',
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Shopify-Access-Token': SHOPIFY_ADMIN_API_ACCESS_TOKEN,
       },
-      cache: 'no-store', // Ensure we always get fresh data
+      body: JSON.stringify(graphqlQuery),
+      cache: 'no-store',
     });
 
     if (!response.ok) {
@@ -120,25 +193,27 @@ export async function getShopifyOrders(): Promise<Order[]> {
       throw new Error(`Failed to fetch Shopify orders: ${response.status} ${response.statusText} - ${errorBody}`);
     }
 
-    const data: { orders: ShopifyOrder[] } = await response.json();
+    const jsonResponse = await response.json();
     
-    if (!data.orders) {
-        return [];
+    if (jsonResponse.errors) {
+        console.error("GraphQL Errors:", JSON.stringify(jsonResponse.errors, null, 2));
+        throw new Error("Error executing GraphQL query.");
     }
     
-    // In a production app, you might want to fetch metafields separately
-    // as it can be more efficient if not all orders have them.
-    // For simplicity here, we assume they might be included or we would fetch them.
-    // The current `fields` param doesn't fetch them. We'd need GraphQL for that efficiently.
-    // So for now, the stage will default to 'Order Placed'.
-    
-    const transformedOrders = data.orders.map(transformShopifyOrder);
-    
+    const orderEdges = jsonResponse.data?.orders?.edges;
+
+    if (!orderEdges) {
+      console.log("No orders found in the Shopify response.");
+      return [];
+    }
+
+    const transformedOrders = orderEdges.map(transformShopifyOrder);
     return transformedOrders;
 
   } catch (error) {
     console.error('Error fetching or transforming Shopify orders:', error);
-    // Return an empty array or handle the error as appropriate for your app
     return [];
   }
 }
+
+    
